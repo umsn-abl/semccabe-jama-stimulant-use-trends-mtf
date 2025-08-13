@@ -622,7 +622,7 @@ label_df = data.frame(
     pull(lab),
   segment_color = rep(rep(c("#56B4E9", "#D55E00", "#CC79A7"), each = 2), 2),
   nudge_x = c(0, -3.75, 3.5, -2, 0, 0, 0, 0, 1.5, 0, 1, -4.1),
-  nudge_y = c(-1.25, 2, 0.5, -2.35, 1, 1.25, -1.1, 1.75, 1, 0.85, 0.65, 0.70))
+  nudge_y = c(-1.25, 2, 0.5, -2.35, 1, 1.25, -1.1, 1.75, 1, 0.85, 0.85, 0.70))
 
 fig_top = bind_rows(lifetime_prev %>% mutate(timeframe = "Lifetime Stimulant Use"), current_prev %>% mutate(timeframe = "Current Stimulant Use")) %>%
   mutate(timeframe = factor(timeframe, levels = c("Lifetime Stimulant Use", "Current Stimulant Use"), ordered = TRUE),
