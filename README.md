@@ -7,7 +7,7 @@ This code combines several public-use datasets (2005-2023) from the Monitoring t
 ## files
 
 [MTF_Stimulant_Trends.Rmd](MTF_Stimulant_Trends.Rmd) is an R Markdown script that performs the data munging and analysis.  
-[MTF_Stimulant_Trends.do](MTF_Stimulant_Trends.do) is a Stata script that calculates yearly model-adjusted prevalence estimates using the margins command.  
+[MTF_Stimulant_Trends.do](MTF_Stimulant_Trends.do) is a Stata script that calculates yearly model-adjusted prevalence estimates using the margins command, which are then used by the R Markdown script.  
 [Var_Names_8_10.csv](Var_Names_8_10.csv) is a CSV file that contains the original names of the variables from the grade 8 and 10 datasets used in the analysis.  
 [Var_Names_12.csv](Var_Names_12.csv) is a CSV file that contains the original names of the variables from the grade 12 datasets used in the analysis.
 
