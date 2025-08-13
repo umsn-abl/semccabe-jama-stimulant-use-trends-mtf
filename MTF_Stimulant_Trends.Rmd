@@ -1,0 +1,687 @@
+---
+title: "MTF Stimulant Trends"
+subtitle: "Grades 8/10/12: 2005-2023"
+author: "John Jardine"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: cosmo
+    toc: TRUE
+    toc_depth: 4
+---
+
+<style type="text/css">
+.main-container {
+max-width: 90% !important;
+margin: auto;
+}
+</style>
+  
+# Code
+
+## Functions
+
+```{r packages, echo = TRUE, message = FALSE, warning = FALSE}
+if(!("pacman" %in% rownames(installed.packages()))) {install.packages("pacman")}
+pacman::p_load(dplyr, tidyr, purrr, haven, MplusAutomation, survey, knitr, kableExtra, ggplot2, ggrepel, ggpubr)
+
+# function to return the unweighted sample sizes and weighted percentages for a given variable
+uw_sizes_w_percent = function(demo) {
+  # get the unweighted sample sizes
+  uw_sizes = df_mod %>% count(!!sym(demo))
+  
+  # get the weighted percents
+  w_percent = df_mod %>%
+    count(!!sym(demo), wt = weight_new) %>%
+    mutate(p = ifelse(is.na(!!sym(demo)), sprintf("%.2f", n / sum(n) * 100),
+                      sprintf("%.2f", n / sum(n[!is.na(!!sym(demo))]) * 100))) %>%
+    select(-n)
+  
+  # join the unweighted sample sizes and weighted percents together
+  mat = inner_join(uw_sizes, w_percent, by = demo) %>%
+    rename(value = !!sym(demo)) %>%
+    select(value, n, p)
+  
+  # extract the missing unweighted sample size and weighted percent
+  miss = mat %>%
+    filter(is.na(value)) %>%
+    summarize(miss = paste0(n, " (", p, "%)")) %>%
+    mutate(miss = ifelse(miss == " (%)", "0 (0.00%)", miss))
+  
+  # return the sample sizes and weighted percents
+  bind_cols(miss,
+            mat %>% filter(!is.na(value))) %>%
+    mutate(n_p = paste0(n, " (", p, "%)")) %>%
+    select(value, n_p, miss) %>%
+    mutate(value = as.character(value),
+           miss = ifelse(row_number() == 1, miss, NA),
+           variable = demo)
+}
+
+# function to format the point estimate and confidence interval returned by svyby
+pe_ci = function(x, y) {
+  x %>%
+    `colnames<-`(c("year", "pe", "lb", "ub")) %>%
+    mutate(pe = sprintf("%.2f", pe * 100),
+           ci = paste0("(", sprintf("%.2f", lb * 100), ", ", sprintf("%.2f", ub * 100), ")"),
+           lb = NULL, ub = NULL) %>%
+    pivot_longer(c(pe, ci)) %>%
+    pivot_wider(names_from = year, values_from = value) %>%
+    mutate(outcome = y) %>%
+    relocate(outcome)
+}
+
+# function to read in and format the margins created by stata to be used in plotting
+margin_readin = function (.x) {
+  read.csv(paste0(path_output, "margins/", .x, ".csv")) %>%
+    `colnames<-`(c("var", "val")) %>%
+    mutate(var = ifelse(lag(var) != "=", lag(var), var),
+           type = ifelse(grepl(",", val), "ci", "pe"),
+           across(everything(), ~ gsub("=", "", .x))) %>%
+    filter(grepl("at", var)) %>%
+    pivot_wider(names_from = type, values_from = val) %>%
+    mutate(year_admin = 2005:2023,
+           trend = as.numeric(pe),
+           trend_lb = as.numeric(gsub("\\,.*", "", ci)),
+           trend_ub = as.numeric(gsub(".*\\,", "", ci)),
+           var = NULL, pe = NULL, ci = NULL)
+}
+
+# table options
+options(knitr.kable.NA = "")
+```
+
+## Read-in
+
+```{r readin, echo = TRUE, message = FALSE, warning = FALSE}
+# paths where the data were saved locally
+path_8_10 = "C:/Users/jjardine/Desktop/MTF/MTF_Stimulant_Trends/data/grades_8_10/"
+path_12 = "C:/Users/jjardine/Desktop/MTF/MTF_Stimulant_Trends/data/grade_12/"
+path_code = "C:/Users/jjardine/Desktop/MTF/MTF_Stimulant_Trends/code/JAMA/"
+path_output = "C:/Users/jjardine/Desktop/MTF/MTF_Stimulant_Trends/data/JAMA/"
+
+# get the file paths for all grade 8/10 form 1 datasets and grade 12 forms 4/5 datasets
+files_8_10 = list.files(path_8_10)
+files_8_10 = rep(files_8_10, each = 2)
+files_8_10 = paste0(path_8_10, files_8_10, "/", sub("-.*", "", files_8_10), "/DS000", c(1, 5), "/")
+files_8_10 = files_8_10[grepl("04537|20180|22500|25422|28402|30984|33902", files_8_10) | grepl("DS0001", files_8_10)]
+files_8_10 = paste0(files_8_10, list.files(files_8_10)[grepl(".sav", list.files(files_8_10))])
+
+files_12 = list.files(path_12)
+files_12 = rep(files_12, each = 2)
+files_12 = paste0(path_12, files_12, "/", sub("-.*", "", files_12), "/DS000", 5:6, "/")
+files_12 = paste0(files_12, list.files(files_12)[grepl(".por|.sav", list.files(files_12))])
+
+# read in all the datasets
+df_8_10 = map(files_8_10, ~ read_spss(.x, user_na = TRUE))
+names(df_8_10) = sub(".*\\/", "", files_8_10)
+
+df_12 = map(files_12, ~ read_spss(.x, user_na = TRUE))
+names(df_12) = sub(".*\\/", "", files_12)
+```
+
+## Subset
+
+```{r subset, echo = TRUE, message = FALSE, warning = FALSE}
+# for grades 8/10, get the form 1 data,
+df_8_10 = map(df_8_10, ~ .x %>% filter(V3 == 1))
+
+# read in external files that contain all the variable names we want
+Var_Names_8_10 = read.csv(paste0(path_code, "Var_Names_8_10.csv"), check.names = FALSE)
+Var_Names_12 = read.csv(paste0(path_code, "Var_Names_12.csv"), check.names = FALSE)
+
+# get variables of interest in each dataset
+df_8_10_sub = map(names(df_8_10), function(.x) {
+  dat = df_8_10[[.x]]
+  
+  varNames = Var_Names_8_10 %>% select(newName, all_of(.x))
+  names(varNames) = c("newName", "oldName")
+  varNames = varNames %>% filter(oldName %in% names(dat))
+  
+  dat = dat %>% select(all_of(varNames$oldName))
+  names(dat) = varNames$newName
+  dat
+})
+names(df_8_10_sub) = names(df_8_10)
+
+df_12_sub = map(names(df_12), function(.x) {
+  dat = df_12[[.x]]
+  
+  varNames = Var_Names_12 %>% select(newName, all_of(.x))
+  names(varNames) = c("newName", "oldName")
+  varNames = varNames %>% filter(oldName %in% names(dat))
+  
+  dat = dat %>% select(all_of(varNames$oldName))
+  names(dat) = varNames$newName
+  dat
+})
+names(df_12_sub) = names(df_12)
+```
+
+## Transform
+
+```{r transform, echo = TRUE, message = FALSE, warning = FALSE}
+# add a grade-level variable to each file
+# for 2005-2011, the grades 8 and 10 files were kept separate
+df_8_10_sub[c("04537-0001-Data.sav", "20180-0001-Data.sav", "22500-0001-Data.sav", "25422-0001-Data.sav",
+              "28402-0001-Data.sav", "30984-0001-Data.sav", "33902-0001-Data.sav")] =
+  map(df_8_10_sub[c("04537-0001-Data.sav", "20180-0001-Data.sav", "22500-0001-Data.sav", "25422-0001-Data.sav",
+                    "28402-0001-Data.sav", "30984-0001-Data.sav", "33902-0001-Data.sav")],
+      ~ .x %>% mutate(grade_level = 8))
+
+df_8_10_sub[c("04537-0005-Data.sav", "20180-0005-Data.sav", "22500-0005-Data.sav", "25422-0005-Data.sav",
+              "28402-0005-Data.sav", "30984-0005-Data.sav", "33902-0005-Data.sav")] =
+  map(df_8_10_sub[c("04537-0005-Data.sav", "20180-0005-Data.sav", "22500-0005-Data.sav", "25422-0005-Data.sav",
+                    "28402-0005-Data.sav", "30984-0005-Data.sav", "33902-0005-Data.sav")],
+      ~ .x %>% mutate(grade_level = 10))
+
+# for 2012-2017, there was only one variable for r_id, so we must use the included grade-level variable,
+# which was already read-in as variable V501 and then re-named
+
+# for 2018-2023, there were two separate variables for r_id based on respondent's grade-level.
+# we can use this to create the new grade-level variable since we need to create a composite r_id anyways
+df_8_10_sub[c("37415-0001-Data.sav", "37842-0001-Data.sav", "38189-0001-Data.sav",
+              "38502-0001-Data.sav", "38883-0001-Data.sav", "39171-0001-Data.sav")] =
+  map(df_8_10_sub[c("37415-0001-Data.sav", "37842-0001-Data.sav", "38189-0001-Data.sav",
+                    "38502-0001-Data.sav", "38883-0001-Data.sav", "39171-0001-Data.sav")],
+      ~ .x %>%
+        mutate(grade_level = ifelse(!is.na(r_id_8), 8, 10),
+               r_id = ifelse(!is.na(r_id_8), r_id_8, r_id_10)) %>%
+        select(-r_id_8, -r_id_10))
+
+# grade-level variable for grade 12 files
+df_12_sub = map(df_12_sub, ~ .x %>% mutate(grade_level = 12))
+```
+
+## Combine
+
+```{r combine, echo = TRUE, message = FALSE, warning = FALSE}
+# bind all the datasets together
+df_all = bind_rows(c(df_8_10_sub, df_12_sub))
+
+# convert all the columns to numeric
+df_all = df_all %>% mutate_all(as.numeric)
+
+# replace -9 with NA for all variables
+df_all[df_all == -9] = NA
+```
+
+## Recode
+
+```{r recode, echo = TRUE, message = FALSE, warning = FALSE}
+df_mod = df_all %>%
+  mutate(
+    
+    # year: 0 = 2005, 1 = 2006, 2 = 2007, ...
+    year = year_admin - 2005,
+    
+    # population density: 0 = smallest (non-msa), 1 = medium (other msa), 2 = largest (large msa)
+    pop_dens = case_when(self_rep_large_msa == 0 & msa_non_msa == 0 ~ 0,
+                         self_rep_large_msa == 0 & msa_non_msa == 1 ~ 1,
+                         self_rep_large_msa == 1 & msa_non_msa == 1 ~ 2),
+    
+    # region: 1 = northeast, 2 = midwest, 3 = south, 4 = west
+    region = schl_rgn_4,
+    
+    # sex: 0 = male, 1 = female (other responses set to missing)
+    sex = case_when(r_sex == 1 ~ 0,
+                    r_sex == 2 ~ 1),
+    
+    # race: 0 = white, 1 = black, 2 = hispanic, 3 = other/missing
+    race = case_when(r_race == 2 ~ 0,
+                     r_race == 1 ~ 1,
+                     r_race == 3 ~ 2,
+                     .default    = 3),
+    
+    # parents' education: 0 = neither parent is a college graduate, 1 = at least one parent is a college graduate, 2 = don't know or does not apply
+    parent_ed = case_when(fathr_educ_level %in% 5:6 | mothr_educ_level %in% 5:6 ~ 1,
+                          fathr_educ_level %in% 1:4 | mothr_educ_level %in% 1:4 ~ 0,
+                          fathr_educ_level == 7 | mothr_educ_level == 7 ~ 2),
+    
+    # boolean lifetime nonmedical stimulant use variable
+    nonmed_stim_life = as.numeric(amph_life >= 2),
+    
+    # boolean past 30-day nonmedical stimulant use variable
+    nonmed_stim_30 = as.numeric(amph_30 >= 2),
+    
+    # categorical lifetime nonmedical stimulant use variable: 0 = 0 times, 1 = 1-2 times, 2 = 3-9 times, 3 = 10+ times
+    nonmed_stim_life_f = case_when(amph_life == 1     ~ 0,
+                                   amph_life == 2     ~ 1,
+                                   amph_life %in% 3:4 ~ 2,
+                                   amph_life >= 5     ~ 3),
+    
+    # categorical past 30-day nonmedical stimulant use variable: 0 = 0 times, 1 = 1-2 times, 2 = 3-9 times, 3 = 10+ times
+    nonmed_stim_30_f = case_when(amph_30 == 1     ~ 0,
+                                 amph_30 == 2     ~ 1,
+                                 amph_30 %in% 3:4 ~ 2,
+                                 amph_30 >= 5     ~ 3),
+    
+    # boolean lifetime medical stimulant use (for ADHD) variable
+    med_stim_life = case_when(ever_ad_stim_dr >= 2 ~ 1,
+                              ever_ad_stim_dr == 1 ~ 0),
+    
+    # boolean current medical stimulant use (for ADHD) variable
+    med_stim_curr = case_when(ever_ad_stim_dr == 3 ~ 1,
+                              ever_ad_stim_dr %in% 1:2 ~ 0),
+    
+    # boolean lifetime medical AND nonmedical stimulant use variable
+    med_nonmed_stim_life = case_when(is.na(nonmed_stim_life) | is.na(med_stim_life) ~ NA,
+                                     nonmed_stim_life == 0 | med_stim_life == 0 ~ 0,
+                                     nonmed_stim_life == 1 & med_stim_life == 1 ~ 1),
+    
+    # boolean current medical AND nonmedical stimulant use variable
+    med_nonmed_stim_curr = case_when(is.na(nonmed_stim_30) | is.na(med_stim_curr) ~ NA,
+                                     nonmed_stim_30 == 0 | med_stim_curr == 0 ~ 0,
+                                     nonmed_stim_30 == 1 & med_stim_curr == 1 ~ 1))
+
+# adjust the weights to account for the combination of all grades and multiple years
+df_mod = df_mod %>%
+  mutate(weight_new = case_when(year_admin %in% 2005:2006 ~ sampling_weight * c("8" = 0.361644392, "10" = 0.349114023, "12" = 0.289241584)[as.character(grade_level)],
+                                year_admin %in% 2007:2010 ~ sampling_weight * c("8" = 0.368452696, "10" = 0.345536264, "12" = 0.286011039)[as.character(grade_level)],
+                                year_admin %in% 2011:2014 ~ sampling_weight * c("8" = 0.348176753, "10" = 0.354775629, "12" = 0.297047618)[as.character(grade_level)],
+                                year_admin %in% 2015:2018 ~ sampling_weight * c("8" = 0.337814978, "10" = 0.353295953, "12" = 0.308889069)[as.character(grade_level)],
+                                year_admin %in% 2019:2023 ~ sampling_weight * c("8" = 0.339592577, "10" = 0.351601158, "12" = 0.308806265)[as.character(grade_level)]))
+
+# create a unique ID variable for each respondent
+df_mod = df_mod %>% mutate(id = as.numeric(paste0(year_admin - 2004, grade_level, r_id)))
+
+# save the dataset locally in stata format
+write_dta(df_mod, paste0(path_output, "mtf_stimulant_trends.dta"))
+```
+
+## Mplus Analyses
+
+```{r mplus, echo = TRUE, message = FALSE, warning = FALSE, results = "hide"}
+df_mplus = data.frame(df_mod) %>%
+  
+  mutate(gr10    = as.numeric(grade_level == 10), gr12     = as.numeric(grade_level == 12), suburb = as.numeric(pop_dens == 1), urban   = as.numeric(pop_dens  == 2),
+         midwest = as.numeric(region      ==  2), south    = as.numeric(region      ==  3), west   = as.numeric(region   == 4), female  = as.numeric(sex       == 1),
+         black   = as.numeric(race        ==  1), hispanic = as.numeric(race        ==  2), other  = as.numeric(race     == 3), college = as.numeric(parent_ed == 1),
+         dntknow = as.numeric(parent_ed   ==  2),
+         
+         ygr10 = year * gr10, ygr12   = year * gr12,   ysuburb = year * suburb, yurban = year * urban,    ymidwest = year * midwest, ysouth   = year * south,
+         ywest = year * west, yfemale = year * female, yblack  = year * black,  yhisp  = year * hispanic, yother   = year * other,   ycollege = year * college, ydntknow = year * dntknow) %>%
+  
+  rename(nmdlife = nonmed_stim_life, nmdcurr = nonmed_stim_30, medlife = med_stim_life, medcurr = med_stim_curr, mnmlife = med_nonmed_stim_life, mnmcurr = med_nonmed_stim_curr, weight = weight_new) %>%
+  
+  mutate(across(everything(), ~ ifelse(is.na(.x), -9999, .x))) %>%
+  
+  select(id, year, gr10, gr12, suburb, urban, midwest, south, west, female, black, hispanic, other, college, dntknow, ygr10, ygr12, ysuburb, yurban,
+         ymidwest, ysouth, ywest, yfemale, yblack, yhisp, yother, ycollege, ydntknow, nmdlife, nmdcurr, medlife, medcurr, mnmlife, mnmcurr, weight)
+
+modelFit = function(xvars, yvar) {
+  variable = paste0("usevariables = year gr10 gr12 suburb urban midwest south west female black
+                    hispanic other college dntknow ", xvars, " ", yvar,
+                    ";
+                    categorical = ", yvar,
+                    ";
+                    weight = weight;
+                    
+                    cluster = id;
+                    
+                    missing = all(-9999);")
+  
+  model = paste0(yvar, " ON year gr10 gr12 suburb urban midwest south west female
+                 black hispanic other college dntknow ", xvars,
+                 ";
+                 [year gr10 gr12 suburb urban midwest south west female
+                 black hispanic other college dntknow ", xvars, "];")
+  
+  analysis = paste0("type = complex;
+                    estimator = mlr;
+                    algorithm = integration;
+                    integration = montecarlo(1000);
+                    convergence = 0.00001;
+                    mconvergence = 0.01;
+                    logcriterion = 0.01;
+                    rlogcriterion = 0.00001;
+	                  mcseed = ",
+                    sum(utf8ToInt(paste0(xvars, yvar))),
+                    ";
+                    processors = 10;")
+  
+  mp_mod = mplusObject(
+    VARIABLE = variable,
+    
+    ANALYSIS = analysis,
+    
+    MODEL = model,
+    
+    OUTPUT = "cinterval;",
+    
+    USEVARIABLES = names(df_mplus),
+    rdata = df_mplus)
+  
+  if(xvars == "") {folderpath = "basic_models/"} else (folderpath = "int_models/")
+  mplusModeler(mp_mod, modelout = paste0(folderpath, gsub(" .*", "", xvars), yvar, ".inp"), run = 1, writeData = "ifmissing")
+}
+
+pmap(expand.grid(xvar = "", yvar = c("nmdlife", "nmdcurr", "medlife", "medcurr", "mnmlife", "mnmcurr"), stringsAsFactors = FALSE), modelFit)
+pmap(expand.grid(xvars = c("ygr10 ygr12", "yfemale", "yblack yhisp yother"), yvar = c("nmdcurr", "medcurr", "mnmcurr"), stringsAsFactors = FALSE), modelFit)
+```
+
+# Tables and Figures
+
+## Overall Sample Statistics
+
+```{r samp_stats, echo = FALSE, message = FALSE, warning = FALSE, results = "asis"}
+varLabels = c("grade_level8" = "8th", "grade_level10" = "10th", "grade_level12" = "12th", "pop_dens0" = "Rural", "pop_dens1" = "Suburban", "pop_dens2" = "Urban",
+              "region1" = "Northeast", "region2" = "Midwest", "region3" = "South", "region4" = "West", "sex0" = "Male", "sex1" = "Female", "race0" = "White",
+              "race1" = "Black", "race2" = "Hispanic", "race3" = "Other", "parent_ed0" = "Neither parent is a college graduate",
+              "parent_ed1" = "At least one parent is a college graduate", "parent_ed2" = "Don't know or does not apply")
+
+bind_rows(map(c("grade_level", "pop_dens", "region", "sex", "race", "parent_ed"), uw_sizes_w_percent)) %>%
+  mutate(value = varLabels[paste0(variable, value)],
+         variable = case_match(value,
+                               "8th" ~ "Grade level", "Rural" ~ "Urbanicity", "Northeast" ~ "Region", "Male" ~ "Sex", "White" ~ "Race / ethnicity", "Neither parent is a college graduate" ~ "Parental education")) %>%
+  select(variable, value, n_p, miss) %>%
+  kable(align = "llrr",
+        col.names = c("","", "n (%)", "missing: n (%)"),
+        caption = paste0("Sample Characteristics of Respondents in the Monitoring the Future Study (n = ", nrow(df_mod), ")")) %>%
+  kable_classic_2("striped") %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(2, border_right = TRUE) %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(c(3, 6, 10, 12, 16), extra_css = "border-bottom: 1px solid;") %>%
+  footnote(general = "Sample sizes (n) provided are unweighted, percentages (%) incorporate weights provided by the Monitoring the Future study.",
+           general_title = "")
+
+cat("<br><br><br>")
+```
+
+## Medical Use Breakdown
+
+```{r med_use_breakdown, echo = FALSE, message = FALSE, warning = FALSE, results = "asis"}
+map(c("Current", "Lifetime"), function(timeframe) {
+  if(timeframe == "Current") {df_filtered = df_mod %>% filter(eval(parse(text = "ever_ad_stim_dr == 3")))}
+  else {df_filtered = df_mod %>% filter(eval(parse(text = "ever_ad_stim_dr >= 2")))}
+  inner_join(df_filtered %>%
+               filter(!is.na(yrs_tk_ad_stim)) %>%
+               count(yrs_tk_ad_stim, wt = weight_new) %>%
+               mutate(pct = n / sum(n) * 100, n = NULL),
+             df_filtered %>%
+               filter(!is.na(yrs_tk_ad_stim)) %>%
+               count(yrs_tk_ad_stim),
+             by = "yrs_tk_ad_stim") %>%
+    mutate(pct = paste0(n, " (", sprintf("%.2f%%", pct), ")"), n = NULL,
+           ever_ad_stim_dr = timeframe) %>%
+    pivot_wider(names_from = yrs_tk_ad_stim, values_from = pct, names_prefix = "pct") }) %>%
+  bind_rows() %>%
+  select(ever_ad_stim_dr, pct1, pct2, pct3, pct4, pct5, pct6) %>%
+  kable(align = "lcccccc",
+        col.names = c("Medical Stimulant Use", "Less than 1 year", "1 year", "2 years", "3-5 years", "6-9 years", "10 or more years")) %>%
+  kable_classic_2("striped") %>%
+  column_spec(1, border_right = TRUE) %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(1, extra_css = "border-bottom: 1px solid;") %>%
+  add_header_above(c("", "Duration of Medical Stimulant Use: n (%)" = 6), bold = TRUE) %>%
+  footnote(general = "Sample sizes (n) provided are unweighted, percentages (%) incorporate weights provided by the Monitoring the Future study.",
+           general_title = "")
+
+cat("<br><br><br>")
+```
+
+## Frequency of Nonmedical Use
+
+```{r nonmed_freq, echo = FALSE, message = FALSE, warning = FALSE, results = "asis"}
+prev_tab = function (timeframe) {
+  if(timeframe == "Lifetime") { myDat = df_mod %>% mutate(freq_variable = nonmed_stim_life_f, nonmed_variable = nonmed_stim_life) }
+  else if(timeframe == "Current") { myDat = df_mod %>% mutate(freq_variable = nonmed_stim_30_f, nonmed_variable = nonmed_stim_30) }
+  
+  des = svydesign(ids = ~1, weights = ~weight_new, data = myDat)
+  
+  bind_rows(setNames(c(paste0(timeframe, ": 1-2 times"), "", paste0("n = ", map(2005:2023, function(.x) { myDat %>% filter(year_admin == .x & freq_variable > 0) %>% nrow() }) %>% unlist())),
+                     c("outcome", "name", 2005:2023)),
+            pe_ci(svyby(~I(freq_variable == 1), ~year_admin, subset(des, nonmed_variable == 1), svyciprop, method = "logit", vartype = "ci"), "Any medical use"),
+            setNames(c(paste0(timeframe, ": 3-9 times"), "", paste0("n = ", map(2005:2023, function(.x) { myDat %>% filter(year_admin == .x & freq_variable > 0) %>% nrow() }) %>% unlist())),
+                     c("outcome", "name", 2005:2023)),
+            pe_ci(svyby(~I(freq_variable == 2), ~year_admin, subset(des, nonmed_variable == 1), svyciprop, method = "logit", vartype = "ci"), "Any nonmedical use"),
+            setNames(c(paste0(timeframe, ": 10+ times"), "", paste0("n = ", map(2005:2023, function(.x) { myDat %>% filter(year_admin == .x & freq_variable > 0) %>% nrow() }) %>% unlist())),
+                     c("outcome", "name", 2005:2023)),
+            pe_ci(svyby(~I(freq_variable == 3), ~year_admin, subset(des, nonmed_variable == 1), svyciprop, method = "logit", vartype = "ci"), "Medical and nonmedical use")) %>%
+    mutate(outcome = ifelse(name == "", outcome, NA)) %>%
+    select(-name)
+}
+
+prevs = bind_rows(prev_tab("Lifetime"), prev_tab("Current"))
+
+prevs %>%
+  kable(align = "lccccccccccccccccccc",
+        col.names = c("", 2005:2023),
+        caption = "Frequency of nonmedical stimulant use by year: % (95% CI)") %>%
+  kable_classic_2("striped") %>%
+  column_spec(1, bold = TRUE, border_right = TRUE) %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(c(3, 6, 9, 12, 15), extra_css = "border-bottom: 1px solid;")
+
+cat("<br><br><br>")
+```
+
+## Prevalence and Odds Ratios
+
+```{r prev_ors, echo = FALSE, message = FALSE, warning = FALSE, results = "asis"}
+prev_tab = function (timeframe) {
+  if(timeframe == "Lifetime") { myDat = df_mod %>% mutate(med_variable = med_stim_life, nonmed_variable = nonmed_stim_life, med_nonmed_variable = med_nonmed_stim_life) }
+  else if(timeframe == "Current") { myDat = df_mod %>% mutate(med_variable = med_stim_curr, nonmed_variable = nonmed_stim_30, med_nonmed_variable = med_nonmed_stim_curr) }
+  
+  des = svydesign(ids = ~1, weights = ~weight_new, data = myDat)
+  
+  bind_rows(setNames(c(paste0(timeframe, " any medical use"), "", paste0("n = ", map(2005:2023, function(.x) { myDat %>% filter(year_admin == .x & !is.na(med_variable)) %>% nrow() }) %>% unlist())),
+                     c("outcome", "name", 2005:2023)),
+            pe_ci(svyby(~med_variable, ~year_admin, des, svyciprop, method = "logit", vartype = "ci"), "Any medical use"),
+            setNames(c(paste0(timeframe, " any nonmedical use"), "", paste0("n = ", map(2005:2023, function(.x) { myDat %>% filter(year_admin == .x & !is.na(nonmed_variable)) %>% nrow() }) %>% unlist())),
+                     c("outcome", "name", 2005:2023)),
+            pe_ci(svyby(~nonmed_variable, ~year_admin, des, svyciprop, method = "logit", vartype = "ci"), "Any nonmedical use"),
+            setNames(c(paste0(timeframe, " medical and nonmedical use"), "", paste0("n = ", map(2005:2023, function(.x) { myDat %>% filter(year_admin == .x & !is.na(med_nonmed_variable)) %>% nrow() }) %>% unlist())),
+                     c("outcome", "name", 2005:2023)),
+            pe_ci(svyby(~med_nonmed_variable, ~year_admin, des, svyciprop, method = "logit", vartype = "ci"), "Medical and nonmedical use")) %>%
+    mutate(outcome = ifelse(name == "", outcome, NA)) %>%
+    select(-name)
+}
+
+prevs = bind_rows(prev_tab("Lifetime"), prev_tab("Current"))
+
+basic_mods = readModels(paste0(path_code, "basic_models"))
+
+ors = map(names(basic_mods),
+          function(.x) {
+            inner_join(basic_mods[[.x]][["parameters"]][["ci.unstandardized"]] %>% select(paramHeader, param, low2.5, est, up2.5),
+                       basic_mods[[.x]][["parameters"]][["unstandardized"]] %>% select(paramHeader, param, pval),
+                       by = c("paramHeader", "param")) %>%
+              filter(grepl("ON", paramHeader) & param == "YEAR") %>%
+              mutate(across(c(low2.5, est, up2.5), ~ sprintf("%.3f", exp(.x))),
+                     pval = ifelse(pval == 0.000, "< 0.001", as.character(pval)),
+                     pe_ci = paste0(est, " (", low2.5, ", ", up2.5, ")"),
+                     outcome = .x) %>%
+              select(outcome, pe_ci, pval) }) %>%
+  bind_rows() %>%
+  mutate(outcome = case_match(outcome,
+                              "medlife.out" ~ "Lifetime any medical use",
+                              "nmdlife.out" ~ "Lifetime any nonmedical use",
+                              "mnmlife.out" ~ "Lifetime medical and nonmedical use",
+                              "medcurr.out" ~ "Current any medical use",
+                              "nmdcurr.out" ~ "Current any nonmedical use",
+                              "mnmcurr.out" ~ "Current medical and nonmedical use"))
+
+left_join(prevs, ors, by = "outcome") %>%
+  kable(align = "lccccccccccccccccccccc",
+        col.names = c("", 2005:2023, "Linear Trend", "P-Value"),
+        caption = "Medical and nonmedical stimulant use by year: % (95% CI)") %>%
+  kable_classic_2("striped") %>%
+  column_spec(1, bold = TRUE, border_right = TRUE) %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(c(3, 6, 9, 12, 15), extra_css = "border-bottom: 1px solid;") %>%
+  footnote(general = "Adjusted odds ratios (and 95% confidence intervals) are reported for the linear trends. These models also control for urbanicity, region, sex, race / ethnicity, parental education, and grade level.",
+           general_title = "")
+
+cat("<br><br><br>")
+```
+
+## Table 1
+
+```{r table1, echo = FALSE, message = FALSE, warning = FALSE, results = "asis", fig.width = 14, fig.height = 9}
+mplus_out = readModels(paste0(path_code, "/int_models"))
+
+map(names(mplus_out),
+    function(x) {
+      outcome = case_when(grepl("med", x) ~ "Medical Use",
+                          grepl("nmd", x) ~ "Nonmedical Use",
+                          grepl("mnm", x) ~ "Med and Nonmed")
+      
+      xvarPattern = case_when(grepl("gr10", x)    ~ "YEAR|GR10|GR12",
+                              grepl("female", x)  ~ "YEAR|FEMALE",
+                              grepl("black", x)   ~ "YEAR|BLACK|HISP|OTHER")
+      
+      mplus_out[[x]][["parameters"]][["ci.unstandardized"]]  %>% select(paramHeader, param, low2.5, est, up2.5) %>%
+        filter(grepl("ON", paramHeader) & grepl(xvarPattern, param)) %>%
+        mutate(model_group = xvarPattern)}) %>%
+  bind_rows() %>%
+  mutate(across(c(low2.5, est, up2.5), ~ sprintf("%.3f", exp(.x))),
+         est = paste0(est, " (", low2.5, "-", up2.5, ")")) %>%
+  select(model_group, paramHeader, param, est) %>%
+  pivot_wider(names_from = paramHeader, values_from = est, names_vary = "slowest") %>%
+  mutate(param = gsub("YEAR", "Year", param),
+         param = ifelse(param != "Year", gsub("^Y", "Year x ", param), "Year"),
+         param = gsub("GR10", "Grade 10", param),
+         param = gsub("GR12", "Grade 12", param),
+         param = gsub("FEMALE", "Female", param),
+         param = gsub("BLACK", "Black", param),
+         param = gsub("HISPANIC|HISP", "Hispanic", param),
+         param = gsub("OTHER", "Other", param)) %>%
+  arrange(match(model_group, c("YEAR|GR10|GR12", "YEAR|FEMALE", "YEAR|BLACK|HISP|OTHER"))) %>%
+  select(param, MEDCURR.ON, NMDCURR.ON, MNMCURR.ON) %>%
+  kable(align = "lccc",
+        col.names = c("Independent Variables", rep("aOR (95% CI)", 3))) %>%
+  kable_classic_2("striped") %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(c(5, 8), extra_css = "border-bottom: 1px solid;") %>%
+  add_header_above(c("", "Medical Use", "Nonmedical Use", "Medical and Nonmedical Co-Use"), bold = TRUE) %>%
+  pack_rows(index = c("Models 1-3: Grade Level" = 5, "Models 4-6: Sex" = 3,  "Models 7-9: Race / Ethnicity" = 7))
+
+cat("<br><br><br>")
+```
+
+## Figure 1
+
+```{r figure1, echo = FALSE, message = FALSE, warning = FALSE, results = "asis", fig.width = 11, fig.height = 8.5}
+theme_set(
+  theme_bw() +
+    theme(strip.text.x = element_text(size = 12, face = "bold", color = "black"),
+          strip.background = element_rect(color = "black", fill = "#EEEEEE", size = 0.8),
+          axis.text.x = element_text(size = 10, angle = 45, vjust = 1, hjust = 1, color = "black"),
+          axis.text.y = element_text(size = 12, color = "black"),
+          axis.title.x = element_text(size = 12, margin = margin(t = 5), face = "bold", color = "black"),
+          axis.title.y = element_text(size = 12, margin = margin(r = 5), face = "bold", color = "black"),
+          legend.title = element_text(size = 10, margin = margin(b = 4, l = 2), face = "bold", color = "black"),
+          legend.text = element_text(size = 10, margin = margin(t = 3, b = 3, l = 2), color = "black"),
+          legend.key.width = unit(1, "cm"),
+          legend.key.height = unit(0.15, "cm"),
+          legend.box.background = element_rect(colour = "black", fill = "white", size = 0.5),
+          legend.box.margin = margin(t = 5, b = 7.5, l = 5, r = 5),
+          legend.margin = margin(b = -2),
+          legend.position = "inside",
+          plot.title = element_blank(),
+          panel.border = element_rect(color = "black", size = 0.8),
+          panel.spacing = unit(0.5, "cm"),
+          axis.ticks = element_line(color = "black"),
+          axis.ticks.length = unit(0.25, "cm")))
+
+desFig = svydesign(ids = ~1, weights = ~weight_new, data = df_mod)
+
+lifetime_prev = pmap(data.frame(var = c("med_stim_life", "nonmed_stim_life", "med_nonmed_stim_life"), label = c("Medical use", "Nonmedical use", "Medical and nonmedical use")),
+                     function(var, label) { svyby(as.formula(paste0("~", var)), ~year_admin, desFig, svyciprop, method = "logit", vartype = "ci") %>% rename(pe = !!sym(var)) %>%
+                         inner_join(margin_readin(var), by = "year_admin") %>%
+                         mutate(outcome = label)}) %>%
+  bind_rows()
+
+current_prev = pmap(data.frame(var = c("med_stim_curr", "nonmed_stim_30", "med_nonmed_stim_curr"), label = c("Medical use", "Nonmedical use", "Medical and nonmedical use")),
+                    function(var, label) { svyby(as.formula(paste0("~", var)), ~year_admin, desFig, svyciprop, method = "logit", vartype = "ci") %>% rename(pe = !!sym(var)) %>%
+                        inner_join(margin_readin(var), by = "year_admin") %>%
+                        mutate(outcome = label)}) %>%
+  bind_rows()
+
+nonmed_life_freq = map(1:3, function(val) { svyby(as.formula(paste0("~I(nonmed_stim_life_f == ", val, ")")), ~year_admin, subset(desFig, nonmed_stim_life_f != 0), svyciprop, method = "logit", vartype = "ci") %>%
+    rename(pe = !!sym(paste0("I(nonmed_stim_life_f == ", val, ")"))) %>% mutate(Frequency = c("1-2 times", "3-9 times", "10+ times")[val]) }) %>%
+  bind_rows() %>%
+  mutate(across(c(ci_l, ci_u, pe), ~ .x * 100))
+
+nonmed_curr_freq = map(1:3, function(val) { svyby(as.formula(paste0("~I(nonmed_stim_30_f == ", val, ")")), ~year_admin, subset(desFig, nonmed_stim_30_f != 0), svyciprop, method = "logit", vartype = "ci") %>%
+    rename(pe = !!sym(paste0("I(nonmed_stim_30_f == ", val, ")"))) %>% mutate(Frequency = c("1-2 times", "3-9 times", "10+ times")[val]) }) %>%
+  bind_rows() %>%
+  mutate(across(c(ci_l, ci_u, pe), ~ .x * 100))
+
+label_df = data.frame(
+  year_admin = rep(c(2005, 2023), 6) + rep(rep(c(-0.75/4, 0, 0.75/4), each = 2), 2),
+  trend = bind_rows(lifetime_prev, current_prev) %>% filter(year_admin %in% c(2005, 2023)) %>% pull(trend) * 100,
+  timeframe = factor(rep(c("Lifetime Stimulant Use", "Current Stimulant Use"), each = 6),
+                     levels = c("Lifetime Stimulant Use", "Current Stimulant Use"), ordered = TRUE),
+  myLabel = bind_rows(lifetime_prev, current_prev) %>%
+    filter(year_admin %in% c(2005, 2023)) %>%
+    mutate(across(c(trend, trend_lb, trend_ub), ~ sprintf("%.2f", .x * 100)),
+           lab = paste0(trend, " (", trend_lb, "-", trend_ub, ")")) %>%
+    pull(lab),
+  segment_color = rep(rep(c("#56B4E9", "#D55E00", "#CC79A7"), each = 2), 2),
+  nudge_x = c(0, -3.75, 3.5, -2, 0, 0, 0, 0, 1.5, 0, 1, -4.1),
+  nudge_y = c(-1.25, 2, 0.5, -2.35, 1, 1.25, -1.1, 1.75, 1, 0.85, 0.65, 0.70))
+
+fig_top = bind_rows(lifetime_prev %>% mutate(timeframe = "Lifetime Stimulant Use"), current_prev %>% mutate(timeframe = "Current Stimulant Use")) %>%
+  mutate(timeframe = factor(timeframe, levels = c("Lifetime Stimulant Use", "Current Stimulant Use"), ordered = TRUE),
+         outcome = factor(outcome, levels = c("Medical use", "Nonmedical use", "Medical and nonmedical use"), ordered = TRUE),
+         across(c(ci_l, ci_u, pe, trend, trend_lb, trend_ub), ~ .x * 100),
+         width = 0.65) %>%
+  ggplot(aes(x = year_admin, y = pe, width = width, color = outcome, fill = outcome, shape = outcome, group = outcome)) +
+  geom_point(size = 2, position = position_dodge(0.75)) +
+  geom_line(linewidth = 0.6, position = position_dodge(width = 0.75)) +
+  geom_label_repel(data = label_df, aes(x = year_admin, y = trend, label = myLabel), inherit.aes = FALSE, size = 2.5, segment.linetype = "dashed",
+                   segment.color = label_df$segment_color, fill = alpha(label_df$segment_color, 0.25), nudge_x = label_df$nudge_x, nudge_y = label_df$nudge_y) +
+  geom_errorbar(aes(x = year_admin, ymin = ci_l, ymax = ci_u), linewidth = 0.6, position = position_dodge(width = 0.75)) +
+  geom_ribbon(aes(ymin = trend_lb, ymax = trend_ub), color = NA, alpha = 0.35, position = position_dodge(width = 0.75)) +
+  facet_wrap(~timeframe) + 
+  scale_color_manual(values = c("#56B4E9", "#D55E00", "#CC79A7")) +
+  scale_fill_manual(values = c("#56B4E9", "#D55E00", "#CC79A7")) +
+  scale_shape_manual(values = c(15, 17, 19)) +
+  scale_x_continuous(breaks = seq(2005, 2023, 2), labels = paste0(seq(2005, 2023, 2), "\nn=", df_mod %>% count(year_admin) %>% filter(year_admin %in% seq(2005, 2023, 2)) %>% pull(n)), expand = expansion(add = 0.15)) +
+  scale_y_continuous(limits = c(0, 11), breaks = 0:11, expand = c(0.01, 0)) +
+  labs(color = "Observed Prevalence of Stimulant Use (with 95% CI)",
+       fill = "Adjusted Linear Trend of Stimulant Use (with 95% CI)\n(Predicted Values are Given for 2005 and 2023)",
+       shape = "Observed Prevalence of Stimulant Use (with 95% CI)",
+       x = "Survey Year",
+       y = "Percentage of Respondents") +
+  theme(legend.position.inside = c(0.687, 0.715),
+        legend.box.margin = margin(t = 5, b = 5, l = 5, r = 5),
+        legend.title = element_text(size = 9, margin = margin(b = 4, l = 2), face = "bold", color = "black"),
+        legend.text = element_text(size = 9, margin = margin(t = 3, b = 3, l = 2), color = "black")) +
+  guides(color = guide_legend(nrow = 2, override.aes = list(fill = NA, size = 2.5)),
+         fill = guide_legend(nrow = 2, override.aes = list(shape = NA, alpha = 0.45)))
+
+fig_bot = bind_rows(nonmed_life_freq %>% mutate(timeframe = "Lifetime Frequency of Nonmedical Stimulant Use"), nonmed_curr_freq %>% mutate(timeframe = "Current Frequency of Nonmedical Stimulant Use")) %>%
+  left_join(bind_rows(df_mod %>% group_by(year_admin) %>% summarize(n = sum(nonmed_stim_life, na.rm = TRUE)) %>% mutate(timeframe = "Lifetime Frequency of Nonmedical Stimulant Use"),
+                      df_mod %>% group_by(year_admin) %>% summarize(n = sum(nonmed_stim_30, na.rm = TRUE)) %>% mutate(timeframe = "Current Frequency of Nonmedical Stimulant Use")),
+            by = c("timeframe", "year_admin")) %>%
+  mutate(year_label = paste0(year_admin, "\nn=", n),
+         timeframe = factor(timeframe, levels = c("Lifetime Frequency of Nonmedical Stimulant Use", "Current Frequency of Nonmedical Stimulant Use"), ordered = TRUE),
+         Frequency = factor(Frequency, levels = c("1-2 times", "3-9 times", "10+ times"), ordered = TRUE),
+         width = 0.65)
+
+fig_bot = fig_bot %>%
+  ggplot(aes(x = year_label, y = pe, width = width, color = Frequency, shape = Frequency, group = Frequency)) +
+  geom_point(size = 2, position = position_dodge(0.75)) +
+  geom_line(linewidth = 0.6, position = position_dodge(width = 0.75)) +
+  geom_errorbar(aes(x = year_label, ymin = ci_l, ymax = ci_u), linewidth = 0.6, position = position_dodge(width = 0.75)) +
+  facet_wrap(~timeframe, scales = "free_x") + 
+  scale_color_manual(values = c("#0072B2", "#E69F00", "#009E73")) +
+  scale_shape_manual(values = c(15, 17, 19)) +
+  scale_x_discrete(breaks = c(fig_bot %>% filter(year_admin %in% seq(2005, 2023, 2)) %>% distinct(year_label) %>% pull(year_label)), expand = expansion(add = 0.55)) +
+  scale_y_continuous(limits = c(0, 70), breaks = seq(0, 70, 10), expand = c(0.01, 0)) +
+  labs(x = "Survey Year",
+       y = "Percentage of Nonmedical Users",
+       color = "Frequency of Nonmedical Stimulant Use (with 95% CI)",
+       shape = "Frequency of Nonmedical Stimulant Use (with 95% CI)") +
+  theme(legend.position.inside = c(0.190, 0.126)) +
+  guides(color = guide_legend(nrow = 1, override.aes = list(size = 2.5)),
+         shape = guide_legend(nrow = 1, override.aes = list(size = 2.5)))
+
+ggsave(filename = "C:/Users/jjardine/Desktop/MTF/MTF_Stimulant_Trends/documentation/JAMA/mtf_stimulant_trends_figure_1.pdf", plot = ggarrange(fig_top, fig_bot, nrow = 2), width = 11, height = 8.5, units = "in")
+
+ggarrange(fig_top, fig_bot, nrow = 2)
+```
