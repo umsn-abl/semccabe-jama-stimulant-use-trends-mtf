@@ -17,5 +17,4 @@ Please refer to the following link for the accompanying manuscript: [https://doi
 
 ## data
 
-The data used for this analysis came from the Monitoring the Future (MTF) study and were accessed from the following link (this link is not continuously updated and may break over time):
-- [https://www.icpsr.umich.edu/web/NAHDAP/series/35](https://www.icpsr.umich.edu/web/NAHDAP/series/35)
+The data used for this analysis came from the Monitoring the Future (MTF) study and were accessed from the following link (this link is not continuously updated and may break over time): [https://www.icpsr.umich.edu/web/NAHDAP/series/35](https://www.icpsr.umich.edu/web/NAHDAP/series/35)
